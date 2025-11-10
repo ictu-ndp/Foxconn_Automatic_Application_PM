@@ -1,0 +1,255 @@
+Sub FVT_Step2()
+
+    Dim wb As Workbook, ws As Worksheet
+    Dim wbDest As Workbook, wsDest As Worksheet, wsNew As Worksheet
+    Dim lastRow As Long, lastRowUsed As Long, lastColUsed As Long
+    Dim i As Long
+    Dim col_workorderno As Long, col_partno As Long, col_requestqty As Long, col_qtyuom As Long
+    Dim tempCol1 As Long, tempCol2 As Long, col_rank As Long
+    Dim modelPath As String, wbName As String, fvtPath As String, sapPath As String
+    Dim cellVal As Variant
+    Dim todayStr As String
+    Dim rngFilter As Range
+    Dim lastCol As Long
+
+    ' Set references
+    Set wb = ThisWorkbook
+    Set ws = wb.Sheets(1)
+    todayStr = Format(Date, "yyyymmdd")
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    ' === Enable autofilter on header row if not active ===
+    If Not ws.AutoFilterMode Then
+        ws.Rows(1).AutoFilter
+    End If
+
+    ' === Find required column indexes ===
+    col_workorderno = Application.Match("workorderno", ws.Rows(1), 0)
+    col_partno = Application.Match("partno", ws.Rows(1), 0)
+    col_requestqty = Application.Match("requestqty", ws.Rows(1), 0)
+    col_qtyuom = Application.Match("qtyuom", ws.Rows(1), 0)
+
+    If IsError(col_workorderno) Or IsError(col_partno) Or IsError(col_requestqty) Or IsError(col_qtyuom) Then
+        MsgBox "Required columns not found.", vbCritical
+        GoTo CleanUp
+    End If
+
+    lastRow = ws.Cells(ws.Rows.Count, col_workorderno).End(xlUp).Row
+
+    ' === Filter qtyuom = "EA" and delete entire rows ===
+    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column)).AutoFilter Field:=col_qtyuom, Criteria1:="=EA"
+    With ws.AutoFilter.Range
+        On Error Resume Next
+        For i = .Rows.Count To 2 Step -1
+            If Not .Rows(i).Hidden Then .Rows(i).EntireRow.Delete
+        Next i
+        On Error GoTo 0
+    End With
+    ws.AutoFilterMode = False
+
+    ' === Update lastRow after deletion ===
+    lastRow = ws.Cells(ws.Rows.Count, col_workorderno).End(xlUp).Row
+
+    ' === Delete all columns except workorderno, partno, requestqty ===
+    Dim colCount As Long
+    colCount = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For i = colCount To 1 Step -1
+        If i <> col_workorderno And i <> col_partno And i <> col_requestqty Then
+            ws.Columns(i).Delete
+        End If
+    Next i
+
+    ' === Refresh column indexes after deletion ===
+    col_workorderno = Application.Match("workorderno", ws.Rows(1), 0)
+    col_partno = Application.Match("partno", ws.Rows(1), 0)
+    col_requestqty = Application.Match("requestqty", ws.Rows(1), 0)
+
+    lastRow = ws.Cells(ws.Rows.Count, col_workorderno).End(xlUp).Row
+
+    ' === Insert 2 helper columns right after requestqty ===
+    tempCol1 = col_requestqty + 1
+    ws.Columns(tempCol1).Insert Shift:=xlToRight
+    ws.Cells(1, tempCol1).Value = "Prefix"
+
+    tempCol2 = tempCol1 + 1
+    ws.Columns(tempCol2).Insert Shift:=xlToRight
+    ws.Cells(1, tempCol2).Value = "Check"
+
+    ' === Fill formulas for helper columns ===
+    For i = 2 To lastRow
+        ws.Cells(i, tempCol1).Formula = "=LEFT(" & ws.Cells(i, col_partno).Address(False, False) & ",3)"
+        ws.Cells(i, tempCol2).Formula = "=IFERROR(VLOOKUP(" & ws.Cells(i, tempCol1).Address(False, False) & ",'[Model.xlsx]Model2'!$A:$A,1,0),""N/A"")"
+    Next i
+
+    ' === Enable autofilter and filter Check = "N/A" ===
+    ws.Rows(1).AutoFilter
+
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    Set rngFilter = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+    rngFilter.AutoFilter Field:=tempCol2, Criteria1:="N/A"
+
+    ' === Delete all rows where Check is NOT "N/A" (hidden rows) ===
+    With rngFilter
+        On Error Resume Next
+        For i = .Rows.Count To 2 Step -1
+            If .Rows(i).Hidden Then .Rows(i).EntireRow.Delete
+        Next i
+        On Error GoTo 0
+    End With
+
+    ' === Turn off autofilter ===
+    ws.AutoFilterMode = False
+
+    ' === Delete helper columns ===
+    ws.Columns(tempCol2).Delete
+    ws.Columns(tempCol1).Delete
+
+    ' === Refresh column indexes again ===
+    col_workorderno = Application.Match("workorderno", ws.Rows(1), 0)
+    col_partno = Application.Match("partno", ws.Rows(1), 0)
+    col_requestqty = Application.Match("requestqty", ws.Rows(1), 0)
+
+    lastRow = ws.Cells(ws.Rows.Count, col_workorderno).End(xlUp).Row
+
+    ' === Insert Rank column before workorderno ===
+    col_rank = col_workorderno
+    ws.Columns(col_rank).Insert Shift:=xlToRight
+    ws.Cells(1, col_rank).Value = "Rank"
+
+    ' === Enable autofilter for entire header row ===
+    ws.Rows(1).AutoFilter
+
+    ' === Fill Rank column with VLOOKUP formula ===
+    For i = 2 To lastRow
+        ws.Cells(i, col_rank).Formula = "=IFERROR(VLOOKUP(" & ws.Cells(i, col_rank + 1).Address(False, False) & ",'[FVT WNBU " & todayStr & ".xlsx]Sheet1'!$A:$S,19,0),"""")"
+    Next i
+
+    ' === Sort data by Rank ascending ===
+    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column)).Sort _
+        Key1:=ws.Cells(2, col_rank), Order1:=xlAscending, Header:=xlYes
+
+    ' === From here continue original logic: copy to Model.xlsx, assign formulas, create copy sheet, etc. ===
+    modelPath = "C:\Users\V3238413\Desktop\Model.xlsx"
+    wbName = Dir(modelPath)
+    On Error Resume Next
+    Set wbDest = Workbooks(wbName)
+    On Error GoTo 0
+    If wbDest Is Nothing Then Set wbDest = Workbooks.Open(modelPath)
+    Set wsDest = wbDest.Sheets("Model1")
+
+    ws.Range("A1:D" & lastRow).Copy
+    wsDest.Range("A1").PasteSpecial xlPasteValues
+    Application.CutCopyMode = False
+
+    fvtPath = "'[FVT WNBU " & todayStr & ".xlsx]Sheet1'!$A:$N"
+    sapPath = "'[sap_ok.xls]Sheet1'!$A:$B"
+
+    With wsDest
+        .Range("F2").Formula = "=VLOOKUP(B2," & fvtPath & ",13,0)"
+        .Range("G2").Formula = "=VLOOKUP(B2," & fvtPath & ",14,0)"
+        .Range("J2").Formula = "=IFERROR(VLOOKUP(C2," & sapPath & ",2,0),0)"
+        .Range("E2").Formula = "=IF(B2=B1,E1&"",""&C2,C2)"
+        .Range("H2").Formula = "=F2-G2"
+        .Range("I2").Formula = "=D2/F2*H2"
+        .Range("K2").Formula = "=SUMIF(OFFSET($C$1,0,0,ROW(),1),C2,OFFSET($I$1,0,0,ROW(),1))-J2"
+        .Range("L2").Formula = "=IF(B2=B1,IF(K2>0,IF(L1="""",""MSR ""&C2,L1&"",""&C2),L1),IF(K2>0,""MSR ""&C2,""""))"
+        .Range("E2:L2").AutoFill Destination:=.Range("E2:L" & lastRow)
+    End With
+
+    Application.Calculate
+
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wbDest.Sheets("Model1_Copy").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+
+    Set wsNew = wbDest.Sheets.Add(After:=wsDest)
+    wsNew.Name = "Model1_Copy"
+
+    With wsDest
+        lastRowUsed = .Cells.Find("*", SearchOrder:=xlByRows, SearchDirection:=xlPrevious).Row
+        lastColUsed = .Cells.Find("*", SearchOrder:=xlByColumns, SearchDirection:=xlPrevious).Column
+        .Range(.Cells(1, 1), .Cells(lastRowUsed, lastColUsed)).Copy
+    End With
+
+    wsNew.Range("A1").PasteSpecial xlPasteValues
+    Application.CutCopyMode = False
+
+    wsNew.Rows(1).AutoFilter
+    For i = 1 To wsNew.Cells(1, wsNew.Columns.Count).End(xlToLeft).Column
+        If LCase(wsNew.Cells(1, i).Value) = "workorderno" Then
+            wsNew.Cells(1, i).Value = "WO"
+            Exit For
+        End If
+    Next i
+
+    lastRow = wsNew.Cells(wsNew.Rows.Count, "B").End(xlUp).Row
+    wsNew.Cells(1, 1).Value = "Rank"
+    For i = 2 To lastRow
+        If Trim(wsNew.Cells(i, 2).Value) <> "" Then
+            wsNew.Cells(i, 1).Value = i - 1
+        End If
+    Next i
+
+    With wsNew.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=wsNew.Range("A2:A" & lastRow), Order:=xlDescending
+        .SetRange wsNew.Range("A1").CurrentRegion
+        .Header = xlYes
+        .Apply
+    End With
+
+CleanUp:
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+    ' === Open FVT WNBU " & todayStr & ".xlsx and assign VLOOKUP formulas to Full PN and MSR columns ===
+    Dim wbFVT As Workbook, wsFVT As Worksheet
+    Dim col_fullpn As Long, col_msr As Long
+    Dim lastRowFVT As Long
+    Dim fvtFilePath As String, fvtFileName As String
+
+    fvtFilePath = "C:\Users\V3238413\Desktop\FVT WNBU " & todayStr & ".xlsx"
+    fvtFileName = Dir(fvtFilePath)
+
+    ' Check if workbook is already open, open if not
+    On Error Resume Next
+    Set wbFVT = Workbooks(fvtFileName)
+    On Error GoTo 0
+    If wbFVT Is Nothing Then
+        Set wbFVT = Workbooks.Open(fvtFilePath)
+    End If
+
+    Set wsFVT = wbFVT.Sheets(1)
+
+    ' Find column positions of "Full PN" and "MSR"
+    col_fullpn = Application.Match("Full PN", wsFVT.Rows(1), 0)
+    col_msr = Application.Match("MSR", wsFVT.Rows(1), 0)
+
+    If IsError(col_fullpn) Or IsError(col_msr) Then
+        MsgBox "Could not find column Full PN or MSR in FVT WNBU " & todayStr & ".", vbCritical
+        Exit Sub
+    End If
+
+    ' Determine last row to apply formulas
+    lastRowFVT = wsFVT.Cells(wsFVT.Rows.Count, 1).End(xlUp).Row
+
+    With wsFVT
+        ' Assign formulas
+        .Range(.Cells(2, col_fullpn), .Cells(lastRowFVT, col_fullpn)).Formula = _
+            "=IFERROR(VLOOKUP(A2,'[Model.xlsx]Model1_Copy'!$B:$L,4,0),"""")"
+        .Range(.Cells(2, col_msr), .Cells(lastRowFVT, col_msr)).Formula = _
+            "=IFERROR(VLOOKUP(A2,'[Model.xlsx]Model1_Copy'!$B:$L,11,0),"""")"
+        
+        ' Convert formulas to values
+        .Range(.Cells(2, col_fullpn), .Cells(lastRowFVT, col_fullpn)).Value = _
+            .Range(.Cells(2, col_fullpn), .Cells(lastRowFVT, col_fullpn)).Value
+        .Range(.Cells(2, col_msr), .Cells(lastRowFVT, col_msr)).Value = _
+            .Range(.Cells(2, col_msr), .Cells(lastRowFVT, col_msr)).Value
+    End With
+
+    MsgBox "Processing completed!", vbInformation
+
+End Sub

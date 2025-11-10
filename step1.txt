@@ -1,0 +1,460 @@
+Option Explicit
+
+' === Helper function to check if CNBD value is invalid ===
+Function IsInvalidCNBD(val As Variant) As Boolean
+    On Error Resume Next
+    
+    If IsError(val) Then
+        IsInvalidCNBD = True
+        Exit Function
+    End If
+    
+    Dim s As String
+    s = Trim(CStr(val))
+    
+    ' Check for string "N/A" or "#N/A"
+    If s = "N/A" Or s = "#N/A" Then
+        IsInvalidCNBD = True
+        Exit Function
+    End If
+    
+    ' Check for date parts with day or month = 0 (e.g. "1/0/1900")
+    Dim parts() As String
+    parts = Split(s, "/")
+    If UBound(parts) = 2 Then
+        If parts(0) = "0" Or parts(1) = "0" Then
+            IsInvalidCNBD = True
+            Exit Function
+        End If
+    End If
+    
+    ' Check date earlier than 01/01/2000
+    If IsDate(val) Then
+        If CDate(val) < DateSerial(2000, 1, 1) Then
+            IsInvalidCNBD = True
+            Exit Function
+        End If
+    End If
+    
+    ' Check small numeric values (Excel date serial number <= 1)
+    If IsNumeric(val) Then
+        If val <= 1 Then
+            IsInvalidCNBD = True
+            Exit Function
+        End If
+    End If
+    
+    IsInvalidCNBD = False
+End Function
+
+' === Function to check if workbook is open ===
+Function WorkbookIsOpen(wbName As String) As Boolean
+    Dim wb As Workbook
+    On Error Resume Next
+    Set wb = Workbooks(wbName)
+    WorkbookIsOpen = Not wb Is Nothing
+    On Error GoTo 0
+End Function
+
+Sub FVT_Step1()
+    ' --- Optimize performance ---
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Dim wsCurrent As Worksheet
+    Set wsCurrent = ThisWorkbook.Sheets("Sheet1") ' Worksheet where macro runs
+    
+
+    Dim pathBase As String
+    Dim todayStr As String
+    Dim backlogName As String
+
+    pathBase = "C:\Users\V3238413\Desktop\"
+    todayStr = Format(Date, "yyyymmdd")
+
+    ' Determine file name by day of week
+    If Weekday(Date, vbMonday) = 6 Then
+        backlogName = "FVT UOV 3A4 Backlog " & todayStr & ".xlsb"   ' 7
+    Else
+        backlogName = "FVT UFO 3A4 Backlog " & todayStr & ".xlsb"   '  2 - 6
+    End If
+
+    ' Open source files if not open yet
+    If Not WorkbookIsOpen("WNBU-FVTNEWW.xlsx") Then Workbooks.Open pathBase & "WNBU-FVTNEWW.xlsx"
+    If Not WorkbookIsOpen(backlogName) Then Workbooks.Open pathBase & backlogName
+    If Not WorkbookIsOpen("sap_ok.xls") Then Workbooks.Open pathBase & "sap_ok.xls"
+
+    Dim wbBacklog As Workbook
+    Dim wsBacklog As Worksheet, wsNew As Worksheet
+    Set wbBacklog = Workbooks(backlogName)
+    Set wsBacklog = wbBacklog.Sheets("Backlog")
+
+    
+    ' Remove any active filter in backlog sheet
+    If wsBacklog.AutoFilterMode Then wsBacklog.AutoFilterMode = False
+    
+    ' Find "Product ID" column in Backlog
+    Dim colProdID As Variant
+    colProdID = Application.Match("Product ID", wsBacklog.Rows(1), 0)
+    If IsError(colProdID) Then
+        MsgBox "Cannot find the 'Product ID' column in Backlog!", vbCritical
+        Exit Sub
+    End If
+    
+    ' Filter required Product IDs
+    Dim arrPID As Variant
+    arrPID = Array("C9115AXE-MULTI", "C9115AXI-MULTI", "C9120AXE-MULTI", "C9120AXI-MULTI", "C9136I-MULTI")
+    wsBacklog.Rows(1).AutoFilter Field:=colProdID, Criteria1:=arrPID, Operator:=xlFilterValues
+    
+    ' Delete Sheet_ok if exists, then create new one
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    wbBacklog.Sheets("Sheet_ok").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+    
+    Set wsNew = wbBacklog.Sheets.Add(After:=wbBacklog.Sheets(wbBacklog.Sheets.Count))
+    wsNew.Name = "Sheet_ok"
+    
+    ' Find columns PO Number and Tied Ship Set
+    Dim colPO As Variant, colTSS As Variant
+    colPO = Application.Match("PO Number", wsBacklog.Rows(1), 0)
+    colTSS = Application.Match("Tied Ship Set", wsBacklog.Rows(1), 0)
+    If IsError(colPO) Or IsError(colTSS) Then
+        MsgBox "Cannot find 'PO Number' or 'Tied Ship Set' columns!", vbCritical
+        wsBacklog.AutoFilterMode = False
+        Exit Sub
+    End If
+    
+    ' Set headers in new sheet
+    wsNew.Range("A1").Value = "PO Number"
+    wsNew.Range("B1").Value = "Tied Ship Set"
+    wsNew.Range("C1").Value = "Product ID"
+    
+    Dim lastRowBacklog As Long
+    lastRowBacklog = wsBacklog.Cells(wsBacklog.Rows.Count, colProdID).End(xlUp).Row
+    
+    ' Copy visible filtered data of 3 columns to new sheet
+    On Error Resume Next
+    wsBacklog.Range(wsBacklog.Cells(2, colPO), wsBacklog.Cells(lastRowBacklog, colPO)).SpecialCells(xlCellTypeVisible).Copy wsNew.Range("A2")
+    wsBacklog.Range(wsBacklog.Cells(2, colTSS), wsBacklog.Cells(lastRowBacklog, colTSS)).SpecialCells(xlCellTypeVisible).Copy wsNew.Range("B2")
+    wsBacklog.Range(wsBacklog.Cells(2, colProdID), wsBacklog.Cells(lastRowBacklog, colProdID)).SpecialCells(xlCellTypeVisible).Copy wsNew.Range("C2")
+    On Error GoTo 0
+    
+    ' Remove filter in backlog sheet
+    If wsBacklog.AutoFilterMode Then wsBacklog.AutoFilterMode = False
+    
+    ' Continue data processing on Sheet1
+    
+    Dim desiredCols As Variant
+    desiredCols = Array("WO", "PO Number", "SS", "line ID", "SHIPPING_ROUTE_CODE", "PID", "Full PN", "SKUNAME", "PN", _
+                        "Box", "Packtype", "Order QTY", "Packout Qty", "Qty", "OH", "MSR", "cmt", "Rank", "Hold", _
+                        "NBD", "O_NBD", "CNBD", "Ship to customer", "Ship To Country", "Onhold", "Cancelled", "Travller Status", "aging")
+    
+    Dim currentColDict As Object: Set currentColDict = CreateObject("Scripting.Dictionary")
+    Dim i As Long, j As Long, lastCol As Long
+    lastCol = wsCurrent.Cells(1, wsCurrent.Columns.Count).End(xlToLeft).Column
+    For i = 1 To lastCol
+        If Trim(wsCurrent.Cells(1, i).Value) <> "" Then currentColDict(Trim(wsCurrent.Cells(1, i).Value)) = i
+    Next i
+    
+    Dim lastRow As Long
+    lastRow = wsCurrent.Cells(wsCurrent.Rows.Count, 1).End(xlUp).Row
+    
+    Dim tempData() As Variant
+    ReDim tempData(1 To lastRow, 1 To UBound(desiredCols) + 1)
+    
+    Dim orderCol As Long, packoutCol As Long
+    orderCol = 0: packoutCol = 0
+    
+    For i = 0 To UBound(desiredCols)
+        Dim colName As String
+        colName = desiredCols(i)
+        tempData(1, i + 1) = colName
+        
+        If currentColDict.Exists(colName) Then
+            Dim fromCol As Long
+            fromCol = currentColDict(colName)
+            For j = 2 To lastRow
+                tempData(j, i + 1) = wsCurrent.Cells(j, fromCol).Value
+            Next j
+        ElseIf colName = "Qty" Then
+            For j = 0 To UBound(desiredCols)
+                If desiredCols(j) = "Order QTY" Then orderCol = j + 1
+                If desiredCols(j) = "Packout Qty" Then packoutCol = j + 1
+            Next j
+            If orderCol > 0 And packoutCol > 0 Then
+                For j = 2 To lastRow
+                    tempData(j, i + 1) = Val(tempData(j, orderCol)) - Val(tempData(j, packoutCol))
+                Next j
+            End If
+        End If
+    Next i
+    
+    wsCurrent.Cells.ClearContents
+    wsCurrent.Range(wsCurrent.Cells(1, 1), wsCurrent.Cells(lastRow, UBound(desiredCols) + 1)).Value = tempData
+    
+    ' Delete rows where Qty = 0
+    Dim qtyCol As Variant
+    qtyCol = Application.Match("Qty", wsCurrent.Rows(1), 0)
+    If Not IsError(qtyCol) Then
+        For i = lastRow To 2 Step -1
+            If Val(wsCurrent.Cells(i, qtyCol).Value) = 0 Then wsCurrent.Rows(i).Delete
+        Next i
+    End If
+    
+    ' Delete rows where Cancelled = Yes
+    Dim cancelledCol As Variant
+    cancelledCol = Application.Match("Cancelled", wsCurrent.Rows(1), 0)
+    If Not IsError(cancelledCol) Then
+        For i = wsCurrent.Cells(wsCurrent.Rows.Count, 1).End(xlUp).Row To 2 Step -1
+            If LCase(Trim(wsCurrent.Cells(i, cancelledCol).Value)) = "yes" Then wsCurrent.Rows(i).Delete
+        Next i 
+        wsCurrent.Columns(cancelledCol).Delete
+    End If
+    
+    ' Update lastRow after deletions
+    lastRow = wsCurrent.Cells(wsCurrent.Rows.Count, 1).End(xlUp).Row
+    
+    ' Assign VLOOKUP formulas and then paste values to avoid volatile formulas
+    If lastRow >= 2 Then
+        wsCurrent.Range("H2:H" & lastRow).Formula = "=VLOOKUP(F2,'[WNBU-FVTNEWW.xlsx]WNBU-ATO'!A:E,3,0)"
+        wsCurrent.Range("I2:I" & lastRow).Formula = "=VLOOKUP(F2,'[WNBU-FVTNEWW.xlsx]WNBU-ATO'!A:E,4,0)"
+        wsCurrent.Range("J2:J" & lastRow).Formula = "=VLOOKUP(F2,'[WNBU-FVTNEWW.xlsx]WNBU-ATO'!A:E,5,0)"
+        wsCurrent.Range("K2:K" & lastRow).Formula = "=VLOOKUP(B2,'[" & backlogName & "]Sheet_ok'!A:C,3,0)"
+        wsCurrent.Range("O2:O" & lastRow).Formula = "=VLOOKUP(I2,'[sap_ok.xls]Sheet1'!A:B,2,0)"
+        wsCurrent.Range("Q2:Q" & lastRow).Formula = "=VLOOKUP(F2,'[WNBU-FVTNEWW.xlsx]FVT'!E:J,6,0)"
+        wsCurrent.Range("R2:R" & lastRow).Formula = "=VLOOKUP(B2,'[" & backlogName & "]Backlog'!D:BQ,66,0)"
+        wsCurrent.Range("S2:S" & lastRow).Formula = "=VLOOKUP(B2,'[" & backlogName & "]Backlog'!D:BQ,44,0)"
+        wsCurrent.Range("V2:V" & lastRow).Formula = "=VLOOKUP(B2,'[" & backlogName & "]Backlog'!D:BQ,30,0)"
+        
+        Dim formulaCols As Variant
+        formulaCols = Array("H", "I", "J", "K", "O", "Q", "R", "S", "V")
+        Dim c As Variant
+        For Each c In formulaCols
+            ' Paste values to convert formulas to static values
+            wsCurrent.Range(c & "2:" & c & lastRow).Value = wsCurrent.Range(c & "2:" & c & lastRow).Value
+        Next c
+    End If
+    
+    ' --- Handle CNBD column ---
+    Dim colCNBD As Variant, colONBD As Variant, colRank As Variant
+    colCNBD = Application.Match("CNBD", wsCurrent.Rows(1), 0)
+    colONBD = Application.Match("O_NBD", wsCurrent.Rows(1), 0)
+    colRank = Application.Match("Rank", wsCurrent.Rows(1), 0)
+    
+    Dim cnbdVal As Variant, onbdVal As Variant
+    Dim today As Date: today = Date
+    
+    If Not IsError(colCNBD) Then
+        For i = 2 To lastRow
+            cnbdVal = wsCurrent.Cells(i, colCNBD).Value
+            onbdVal = wsCurrent.Cells(i, colONBD).Value
+            
+            ' Case 1: CNBD invalid -> thay b?ng O_NBD (nhu cu)
+            If IsInvalidCNBD(cnbdVal) Then
+                wsCurrent.Cells(i, colCNBD).NumberFormat = "@"
+                If IsDate(onbdVal) Then
+                    wsCurrent.Cells(i, colCNBD).Value = Format(onbdVal, "mm/dd/yyyy")
+                Else
+                    wsCurrent.Cells(i, colCNBD).Value = ""
+                End If
+            
+            ' Case 2: CNBD là serial number (>= 30000 và <= 60000 ch?ng h?n)
+            ElseIf IsNumeric(cnbdVal) Then
+                If cnbdVal > 30000 And cnbdVal < 60000 Then
+                    wsCurrent.Cells(i, colCNBD).Value = CDate(cnbdVal)
+                    wsCurrent.Cells(i, colCNBD).NumberFormat = "mm/dd/yyyy"
+                End If
+            End If
+        Next i
+    End If
+    
+    ' Sort by O_NBD ascending then CNBD ascending
+    If Not wsCurrent.AutoFilterMode Then wsCurrent.Rows(1).AutoFilter
+    
+    If Not IsError(colONBD) And Not IsError(colCNBD) Then
+        wsCurrent.Range("A1").CurrentRegion.Sort _
+            Key1:=wsCurrent.Cells(1, colONBD), Order1:=xlAscending, _
+            Key2:=wsCurrent.Cells(1, colCNBD), Order2:=xlAscending, _
+            Header:=xlYes
+    ElseIf Not IsError(colONBD) Then
+        wsCurrent.Range("A1").CurrentRegion.Sort Key1:=wsCurrent.Cells(1, colONBD), Order1:=xlAscending, Header:=xlYes
+    ElseIf Not IsError(colCNBD) Then
+        wsCurrent.Range("A1").CurrentRegion.Sort Key1:=wsCurrent.Cells(1, colCNBD), Order1:=xlAscending, Header:=xlYes
+    End If
+
+    ' --- Highlight O_NBD dates within 3 days from today (Red) ---
+    If Not IsError(colONBD) Then
+        For i = 2 To lastRow
+            With wsCurrent.Cells(i, colONBD)
+                If IsDate(.Value) Then
+                    Dim dONBD As Date
+                    dONBD = CDate(.Value)
+                    If dONBD >= today And dONBD <= today + 3 Then
+                        .Interior.Color = RGB(255, 0, 0) 
+                    Else
+                        .Interior.ColorIndex = xlColorIndexNone
+                    End If
+                Else
+                    .Interior.ColorIndex = xlColorIndexNone
+                End If
+            End With
+        Next i
+    End If
+    
+    ' Highlight CNBD dates within 7 days from today
+    If Not IsError(colCNBD) Then
+        For i = 2 To lastRow
+            With wsCurrent.Cells(i, colCNBD)
+                If IsDate(.Value) Then
+                    Dim d As Date: d = CDate(.Value)
+                    If d >= today And d <= today + 7 Then
+                        .Interior.Color = RGB(255, 255, 0) ' Yellow highlight
+                    Else
+                        .Interior.ColorIndex = xlColorIndexNone
+                    End If
+                Else
+                    .Interior.ColorIndex = xlColorIndexNone
+                End If
+            End With
+        Next i
+    End If
+    
+    ' --- Handle Rank column ---
+    If Not IsError(colRank) Then
+        Dim cellVal As Variant
+        ' B1:  #N/A , "n/a" > 0
+        For i = 2 To lastRow
+            cellVal = wsCurrent.Cells(i, colRank).Value
+            If IsError(cellVal) Or Trim(LCase(CStr(cellVal))) = "n/a" Then
+                wsCurrent.Cells(i, colRank).Value = 0
+            End If
+        Next i
+
+        ' B2:Change 0 to 200000 
+        For i = 2 To lastRow
+            If wsCurrent.Cells(i, colRank).Value = 0 Then
+                wsCurrent.Cells(i, colRank).Value = 200000
+                wsCurrent.Cells(i, colRank).Interior.Color = RGB(0, 255, 0)
+            End If
+        Next i
+
+        ' B3: Sort ALL
+        If Not IsError(colCNBD) Then
+            wsCurrent.Range("A1").CurrentRegion.Sort _
+                Key1:=wsCurrent.Cells(1, colCNBD), Order1:=xlAscending, Header:=xlYes
+        End If
+
+        ' B4: Reassign rank 200000+ in CNBD order
+        Dim newRank As Long: newRank = 200000
+        For i = 2 To lastRow
+            cellVal = wsCurrent.Cells(i, colRank).Value
+            If Not IsError(cellVal) Then
+                If cellVal >= 200000 Then
+                    wsCurrent.Cells(i, colRank).Value = newRank
+                    newRank = newRank + 1
+                End If
+            End If
+        Next i
+
+        wsCurrent.Range("A1").CurrentRegion.Sort _
+            Key1:=wsCurrent.Cells(1, colRank), Order1:=xlAscending, Header:=xlYes
+    End If
+
+
+    ' --- Highlight SHIPPING_ROUTE_CODE = "CC-FVT" (orange) ---
+    Dim colSRC As Variant
+    colSRC = Application.Match("SHIPPING_ROUTE_CODE", wsCurrent.Rows(1), 0)
+    If Not IsError(colSRC) Then
+        For i = 2 To lastRow
+            If Trim(UCase(wsCurrent.Cells(i, colSRC).Value)) = "CC-FVT" Then
+                wsCurrent.Cells(i, colSRC).Interior.Color = RGB(255, 155, 0)
+            End If
+        Next i
+    End If
+
+    ' --- Highlight Packtype not "N/A" (orange) ---
+    Dim colPack As Variant
+    colPack = Application.Match("Packtype", wsCurrent.Rows(1), 0)
+    If Not IsError(colPack) Then
+        For i = 2 To lastRow
+            If Not IsError(wsCurrent.Cells(i, colPack).Value) Then
+                Dim packVal As String
+                packVal = Trim(UCase(CStr(wsCurrent.Cells(i, colPack).Value)))
+                
+                If packVal <> "N/A" And packVal <> "" Then
+                    wsCurrent.Cells(i, colPack).Interior.Color = RGB(255, 155, 0)
+                End If
+            End If
+        Next i
+    End If
+
+' === Add WO_Process column with full text format (robust handling) ===
+    Dim colWO As Variant, colWOText As Long
+    Dim rawVal As Variant, txt As String
+    Dim posE As Long, basePart As String, expPart As String
+
+    ' Find the "WO" column
+    colWO = Application.Match("WO", wsCurrent.Rows(1), 0)
+    If Not IsError(colWO) Then
+    ' Insert a new column right after WO
+    wsCurrent.Columns(colWO + 1).Insert Shift:=xlToRight
+    wsCurrent.Cells(1, colWO + 1).Value = "WO_Process"
+    colWOText = colWO + 1
+
+    For i = 2 To lastRow
+        rawVal = wsCurrent.Cells(i, colWO).Value2
+
+        If Not IsError(rawVal) Then
+            txt = Trim(CStr(rawVal))
+            If txt <> "" Then
+                posE = InStr(1, txt, "E", vbTextCompare)
+
+                ' Case 1: Scientific notation (contains E+ / E- or decimal part before E)
+                If InStr(1, txt, "E+", vbTextCompare) > 0 _
+                   Or InStr(1, txt, "E-", vbTextCompare) > 0 _
+                   Or (posE > 0 And InStr(1, txt, ".", vbTextCompare) > 0) Then
+
+                    basePart = Left$(txt, posE - 1)      ' Example: "4.00"
+                    basePart = Split(basePart, ".")(0)   ' Take integer part only: "4"
+
+                    expPart = Mid$(txt, posE + 1)        ' Example: "+253" or "-253"
+                    expPart = Replace$(expPart, "+", "")
+                    expPart = Replace$(expPart, "-", "")
+                    expPart = Right$("0000000000" & expPart, 10) ' Pad exponent to 10 digits
+
+                    ' Keep the "E" in the result
+                    wsCurrent.Cells(i, colWOText).Value = "'" & basePart & "E" & expPart
+
+                ' Case 2: Already looks like ID starting with E 
+                Else
+                    ' Just copy as text, preserve exact value
+                    wsCurrent.Cells(i, colWOText).Value = "'" & txt
+                End If
+            Else
+                wsCurrent.Cells(i, colWOText).Value = ""
+            End If
+        Else
+            wsCurrent.Cells(i, colWOText).Value = ""
+        End If
+    Next i
+
+    ' Force column format to Text
+    wsCurrent.Columns(colWOText).NumberFormat = "@"
+End If
+
+
+MsgBox "All processing completed!", vbInformation
+
+    ' --- Restore settings ---
+    Application.Calculation = xlCalculationAutomatic
+    Application.Calculate  
+    Application.EnableEvents = True
+    Application.ScreenUpdating = True
+
+    wsCurrent.Activate
+    wsCurrent.Range("A1").Select
+
+End Sub

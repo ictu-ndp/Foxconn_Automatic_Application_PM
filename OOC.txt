@@ -1,0 +1,113 @@
+Sub OOC()
+
+    Dim wbSource As Workbook, wsSource As Worksheet, wsSheetOk As Worksheet
+    Dim wbDest As Workbook, wsDest As Worksheet
+    Dim lastRowSource As Long, lastCol As Long, lastRowDest As Long
+    Dim colOption As Long, colPO As Long, colAddr As Long, colSecPri As Long, colRank As Long
+    Dim i As Long
+    Dim fileSource As String, fileSave As String
+    Dim todayStr As String, backlogName As String
+    
+    '=== Path + file source ===
+    todayStr = Format(Date, "yyyymmdd")
+    today1Str = Format(Date, "yyyy-mm-dd")
+
+    If Weekday(Date, vbMonday) = 6 Then
+        backlogName = "FOC UOV 3A4 Backlog " & todayStr & ".xlsb"  ' Th? 7
+    Else
+        backlogName = "FOC UFO 3A4 Backlog " & todayStr & ".xlsb"  ' Th? 2 - Th? 6
+    End If
+    
+    fileSource = "C:\Users\V3238413\Desktop\" & backlogName
+    
+    '=== Open source file ===
+    Set wbSource = Workbooks.Open(fileSource)
+    Set wsSource = wbSource.Sheets(1)
+    
+    '=== Find last row and column in source ===
+    lastRowSource = wsSource.Cells(wsSource.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsSource.Cells(1, wsSource.Columns.Count).End(xlToLeft).Column
+    
+    '=== Clear filter if any ===
+    If wsSource.AutoFilterMode Then wsSource.AutoFilterMode = False
+    
+    '=== Find "Option Number" column ===
+    colOption = Application.Match("Option Number", wsSource.Rows(1), 0)
+    If IsError(colOption) Then
+        MsgBox "Cannot find 'Option Number' column in source!", vbCritical
+        Exit Sub
+    End If
+    
+    '=== Apply filter Option Number = 0 ===
+    wsSource.Range(wsSource.Cells(1, 1), wsSource.Cells(lastRowSource, lastCol)).AutoFilter _
+        Field:=colOption, Criteria1:="0"
+    
+    '=== Create or clear Sheet_ok in source file ===
+    On Error Resume Next
+    Set wsSheetOk = wbSource.Sheets("Sheet_ok")
+    If wsSheetOk Is Nothing Then
+        Set wsSheetOk = wbSource.Sheets.Add(After:=wbSource.Sheets(wbSource.Sheets.Count))
+        wsSheetOk.Name = "Sheet_ok"
+    Else
+        wsSheetOk.Cells.Clear
+    End If
+    On Error GoTo 0
+    
+    '=== Copy filtered data to Sheet_ok in source file ===
+    wsSource.Range(wsSource.Cells(1, 1), wsSource.Cells(lastRowSource, lastCol)) _
+        .SpecialCells(xlCellTypeVisible).Copy wsSheetOk.Range("A1")
+    
+    '=== Find 4 columns to copy ===
+    colPO = Application.Match("PO Number", wsSheetOk.Rows(1), 0)
+    colAddr = Application.Match("Addressable Flag", wsSheetOk.Rows(1), 0)
+    colSecPri = Application.Match("Secondary Priority", wsSheetOk.Rows(1), 0)
+    colRank = Application.Match("Final Rank", wsSheetOk.Rows(1), 0)
+    
+    If IsError(colPO) Or IsError(colAddr) Or IsError(colSecPri) Or IsError(colRank) Then
+        MsgBox "Cannot find all 4 required columns in Sheet_ok!", vbCritical
+        Exit Sub
+    End If
+    
+    '=== Reference file macro (file currently running) as destination ===
+    Set wbDest = ThisWorkbook
+    Set wsDest = wbDest.Sheets(1)
+    wsDest.Cells.Clear
+    
+    '=== Copy 4 columns from Sheet_ok to destination A-D ===
+    lastRowSource = wsSheetOk.Cells(wsSheetOk.Rows.Count, colPO).End(xlUp).Row
+    wsSheetOk.Range(wsSheetOk.Cells(1, colPO), wsSheetOk.Cells(lastRowSource, colPO)).Copy wsDest.Range("A1")
+    wsSheetOk.Range(wsSheetOk.Cells(1, colAddr), wsSheetOk.Cells(lastRowSource, colAddr)).Copy wsDest.Range("B1")
+    wsSheetOk.Range(wsSheetOk.Cells(1, colSecPri), wsSheetOk.Cells(lastRowSource, colSecPri)).Copy wsDest.Range("C1")
+    wsSheetOk.Range(wsSheetOk.Cells(1, colRank), wsSheetOk.Cells(lastRowSource, colRank)).Copy wsDest.Range("D1")
+    
+    '=== Enable AutoFilter in destination ===
+    lastRowDest = wsDest.Cells(wsDest.Rows.Count, "A").End(xlUp).Row
+    wsDest.Range("A1:D" & lastRowDest).AutoFilter
+    
+    '=== Sort by Final Rank ascending ===
+    wsDest.Sort.SortFields.Clear
+    wsDest.Sort.SortFields.Add Key:=wsDest.Range("D2:D" & lastRowDest), _
+        SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+    With wsDest.Sort
+        .SetRange wsDest.Range("A1:D" & lastRowDest)
+        .Header = xlYes
+        .Apply
+    End With
+    
+    '=== Delete rows with blank Final Rank from bottom to top ===
+    For i = lastRowDest To 2 Step -1
+        If Trim(wsDest.Cells(i, "D").Value) = "" Then
+            wsDest.Rows(i).Delete
+        End If
+    Next i
+    
+    '=== Save destination file (Excel 97-2003 format .xls) ===
+    fileSave = "D:\Ethan\OOC\FOC_3a4_and_outlier_file(" & today1Str & ").xls"
+    wbDest.SaveAs Filename:=fileSave, FileFormat:=xlExcel8
+    
+    '=== Close source file without saving ===
+    wbSource.Close SaveChanges:=False
+    
+    MsgBox "Okla!", vbInformation
+
+End Sub

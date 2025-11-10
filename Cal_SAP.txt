@@ -1,0 +1,125 @@
+Option Explicit
+
+Sub Cal_SAP()
+
+    Const HDR_UNRESTR As String = "  Unrestr.-use stock"  ' correct: 1 leading space
+
+    Dim ws As Worksheet, wsP As Worksheet
+    Dim lastCol As Long, lastRow As Long, i As Long
+    Dim pc As PivotCache, pt As PivotTable
+    Dim rngE As Range, c As Range, del As Range
+    Dim h As String, ht As String
+    Dim ptName As String
+    
+    Set ws = ThisWorkbook.Sheets(1) ' Source data sheet
+
+    ' ===== Step 1: Delete row 1 and row 3 (row 3 becomes row 2 after deleting row 1) =====
+    ws.Rows(1).Delete
+    ws.Rows(2).Delete
+
+    ' ===== Step 1.5: Normalize headers =====
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For i = 1 To lastCol
+        h = CStr(ws.Cells(1, i).Value)
+        ht = Trim$(h)
+        Select Case ht
+            Case "Material": ws.Cells(1, i).Value = "Material"
+            Case "Plnt":     ws.Cells(1, i).Value = "Plnt"
+            Case "SLoc":     ws.Cells(1, i).Value = "SLoc"
+            Case "Unrestr.-use stock": ws.Cells(1, i).Value = HDR_UNRESTR   ' force exact with 1 space
+        End Select
+    Next i
+
+    ' ===== Step 2: Keep only 4 required columns =====
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For i = lastCol To 1 Step -1
+        Select Case CStr(ws.Cells(1, i).Value)
+            Case "Material", "Plnt", "SLoc", HDR_UNRESTR
+                ' keep
+            Case Else
+                ws.Columns(i).Delete
+        End Select
+    Next i
+
+    ' ===== Step 3: VLOOKUP to Model.xlsx in column E =====
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    ws.Range("E1").Value = "CheckModel"
+    ws.Range("E2").Formula = "=VLOOKUP(C2,'C:\Users\V3238413\Desktop\[Model.xlsx]Model2'!C:C,1,0)"
+    ws.Range("E2").AutoFill Destination:=ws.Range("E2:E" & lastRow)
+    ws.Range("E2:E" & lastRow).Value = ws.Range("E2:E" & lastRow).Value
+
+    ' ===== Step 4: Delete rows that are not #N/A or "N/A" =====
+    Set rngE = ws.Range("E2:E" & lastRow)
+    For Each c In rngE
+        If Not IsError(c.Value) Then
+            If Len(Trim$(CStr(c.Value))) > 0 Then
+                If UCase$(Trim$(CStr(c.Value))) <> "N/A" Then
+                    If del Is Nothing Then Set del = c Else Set del = Union(del, c)
+                End If
+            End If
+        Else
+            If c.Value <> CVErr(xlErrNA) Then
+                If del Is Nothing Then Set del = c Else Set del = Union(del, c)
+            End If
+        End If
+    Next c
+    If Not del Is Nothing Then del.EntireRow.Delete
+
+    ' ===== Step 5: Delete column E =====
+    On Error Resume Next
+    ws.Columns("E").Delete
+    On Error GoTo 0
+
+    ' Convert "Unrestr.-use stock" column to numbers if they are text
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    With ws.Range("D2:D" & lastRow)
+        .Value = .Value
+    End With
+
+    ' ===== Step 6: Create Pivot =====
+    On Error Resume Next
+    Set wsP = ThisWorkbook.Sheets("Sheet1")
+    On Error GoTo 0
+    If wsP Is Nothing Then
+        Set wsP = ThisWorkbook.Sheets.Add(After:=ws)
+        wsP.Name = "Sheet1"
+    Else
+        wsP.Cells.Clear
+    End If
+
+    ' PivotCache: must pass sheet name + range
+    Dim srcAddr As String
+    srcAddr = "'" & ws.Name & "'!A1:D" & lastRow
+
+    Set pc = ThisWorkbook.PivotCaches.Create( _
+        SourceType:=xlDatabase, _
+        SourceData:=srcAddr)
+
+    ' Ensure pivot table name is unique
+    ptName = "Pivot_Unrestr_" & Format(Now, "hhmmss")
+
+    Set pt = pc.CreatePivotTable( _
+        TableDestination:=wsP.Range("A3"), _
+        TableName:=ptName)
+
+    With pt
+        .PivotFields("Material").Orientation = xlRowField
+        .PivotFields("Material").Position = 1
+
+        .AddDataField .PivotFields(HDR_UNRESTR), "Sum of Unrestr.", xlSum
+
+        If Not .DataBodyRange Is Nothing Then
+            .DataBodyRange.NumberFormat = "General"
+        End If
+    End With
+
+    Dim savePath As String
+    
+    savePath = "C:\Users\V3238413\Desktop\sap_ok.xls"
+    
+    'save
+    ThisWorkbook.SaveAs Filename:=savePath, FileFormat:=xlExcel8
+
+    MsgBox "Okla.", vbInformation
+
+End Sub
