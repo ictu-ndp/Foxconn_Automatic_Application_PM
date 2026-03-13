@@ -1,0 +1,53 @@
+Sub Create_Pivot()
+
+    Dim wsData As Worksheet
+    Dim wsPivot As Worksheet
+    Dim pc As PivotCache
+    Dim pt As PivotTable
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim rngSource As Range
+    Dim src As String
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+
+    Set wsData = ThisWorkbook.Sheets("Sheet1")
+
+    lastRow = wsData.Cells(wsData.Rows.Count, 1).End(xlUp).Row
+    lastCol = wsData.Cells(1, wsData.Columns.Count).End(xlToLeft).Column
+
+    Set rngSource = wsData.Range(wsData.Cells(1, 1), wsData.Cells(lastRow, lastCol))
+
+    src = "'" & wsData.Name & "'!" & rngSource.Address(ReferenceStyle:=xlR1C1)
+
+    Set wsPivot = ThisWorkbook.Worksheets.Add
+    wsPivot.Name = "huizong"
+
+    Set pc = ThisWorkbook.PivotCaches.Create( _
+        SourceType:=xlDatabase, _
+        SourceData:=src)
+
+    Set pt = pc.CreatePivotTable( _
+        TableDestination:=wsPivot.Range("A3"), _
+        TableName:="Pivot_Report")
+
+    With pt
+
+        .PivotFields("TAN").Orientation = xlRowField
+        .PivotFields("TAN").Position = 1
+
+        .PivotFields("QTY").Orientation = xlRowField
+        .PivotFields("QTY").Position = 2
+
+        .AddDataField .PivotFields("QTY"), "Sum QTY", xlSum
+        .PivotFields("Sum QTY").NumberFormat = "#,##0"
+
+    End With
+
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+
+    MsgBox "Done!!"
+
+End Sub

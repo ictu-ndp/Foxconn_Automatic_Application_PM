@@ -1,0 +1,108 @@
+Sub Fill_MSR()
+
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim i As Long, j As Long
+    Dim headers As Variant
+
+    ' variables for WO_Process logic
+    Dim woCol As Long
+    Dim val As String
+    Dim has2 As Boolean, has4 As Boolean
+    Dim fileName As String
+    Dim todayStr As String
+    Dim savePath As String
+
+    Set ws = ActiveSheet
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+
+    '========================================
+    ' 1. FILL MSR BASED ON RANK
+    '========================================
+    For i = 2 To lastRow
+        If Trim(ws.Cells(i, "Q").Value) = "" Then   ' MSR column
+            
+            If ws.Cells(i, "S").Value < 200000 Then
+                ws.Cells(i, "Q").Value = "no material shortage"
+                ws.Cells(i, "Q").Interior.Color = RGB(255, 217, 102) ' Orange Accent 2 Lighter 60%
+                
+            ElseIf ws.Cells(i, "S").Value >= 200000 Then
+                ws.Cells(i, "Q").Value = "Finalrank blank , no material shortage"
+                ws.Cells(i, "Q").Interior.Color = RGB(155, 194, 230) ' Blue Accent 1 Darker 25%
+            End If
+            
+        End If
+    Next i
+
+    '========================================
+    ' 2. DELETE COLUMNS BY HEADER NAME
+    '========================================
+    headers = Array("SKUNAME", "PN", "Box", "Packtype", "OH", "cmt")
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    ' delete columns from right to left
+    For i = lastCol To 1 Step -1
+        For j = LBound(headers) To UBound(headers)
+            If Trim(ws.Cells(1, i).Value) = headers(j) Then
+                ws.Columns(i).Delete
+                Exit For
+            End If
+        Next j
+    Next i
+
+    '========================================
+    ' 3. FIND WO_Process COLUMN
+    '========================================
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    woCol = 0
+
+    For i = 1 To lastCol
+        If Trim(ws.Cells(1, i).Value) = "WO_Process" Then
+            woCol = i
+            Exit For
+        End If
+    Next i
+
+    If woCol = 0 Then
+        MsgBox "WO_Process column not found", vbCritical
+        Exit Sub
+    End If
+
+    '========================================
+    ' 4. SCAN WO_Process DATA
+    '========================================
+    For i = 2 To lastRow
+        val = Trim(ws.Cells(i, woCol).Value)
+        If val <> "" Then
+            If Left(val, 1) = "2" Then has2 = True
+            If Left(val, 1) = "4" Then has4 = True
+        End If
+    Next i
+
+    '========================================
+    ' 5. BUILD FILE NAME AND SAVE AS .XLSM
+    '========================================
+    todayStr = Format(Date, "yyyymmdd")
+
+    If has2 And has4 Then
+        fileName = "VCGE + VCGL material shortage " & todayStr & ".xlsm"
+    ElseIf has2 Then
+        fileName = "VCGE " & todayStr & ".xlsm"
+    ElseIf has4 Then
+        fileName = "VCGL " & todayStr & ".xlsm"
+    Else
+        MsgBox "Done!", vbExclamation
+        Exit Sub
+    End If
+
+    ' fixed save path
+    savePath = "C:\Users\V3238413\Desktop\" & fileName
+
+    ' save workbook as macro-enabled file
+    ThisWorkbook.SaveAs Filename:=savePath, _
+                        FileFormat:=xlOpenXMLWorkbookMacroEnabled
+
+    MsgBox "Process completed and file saved:" & vbCrLf & fileName, vbInformation
+
+End Sub

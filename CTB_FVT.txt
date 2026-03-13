@@ -1,0 +1,326 @@
+Sub CTB()
+
+    Dim ws As Worksheet
+    Dim colCTB As Long
+    Dim col_Unstaged As Long, col_Packout As Long, col_ProductID As Long
+    Dim col_PIDLookup As Long
+    Dim lastRow As Long, lastRowE As Long
+    Dim rng As Range
+    Dim wbFVT As Workbook
+    Dim fvtPath As String
+    Dim todayStr As String
+
+    Set ws = ActiveSheet
+    todayStr = Format(Date, "yyyyMMdd")
+
+    ' ===== Find CTB column =====
+    colCTB = Application.Match("CTB_COMMENT", ws.Rows(1), 0)
+    If IsError(colCTB) Then
+        MsgBox "CTB_COMMENT column not found.", vbCritical
+        Exit Sub
+    End If
+
+    ' ===== Move Product ID column =====
+    col_ProductID = Application.Match("Product ID", ws.Rows(1), 0)
+    If IsError(col_ProductID) Then MsgBox "Product ID column not found": Exit Sub
+
+    ws.Columns(col_ProductID).Cut
+    ws.Columns(colCTB + 1).Insert Shift:=xlToRight
+
+    ' ===== Move Packout Qty column =====
+    col_Packout = Application.Match("Packout Qty", ws.Rows(1), 0)
+    ws.Columns(col_Packout).Cut
+    ws.Columns(colCTB + 1).Insert Shift:=xlToRight
+
+    ' ===== Move Unstaged Qty column =====
+    col_Unstaged = Application.Match("Unstaged Qty", ws.Rows(1), 0)
+    ws.Columns(col_Unstaged).Cut
+    ws.Columns(colCTB + 1).Insert Shift:=xlToRight
+
+    ' ===== Re-find Product ID column after moving =====
+    col_ProductID = Application.Match("Product ID", ws.Rows(1), 0)
+
+    ' ===== Insert PID Lookup column to the right of Product ID =====
+    ws.Columns(col_ProductID + 1).Insert Shift:=xlToRight
+    col_PIDLookup = col_ProductID + 1
+
+    ' ===== Apply VLOOKUP and convert to values =====
+    lastRow = ws.Cells(ws.Rows.Count, col_ProductID).End(xlUp).Row
+
+    ws.Cells(1, col_PIDLookup).Value = "PID Lookup"
+
+    With ws.Range(ws.Cells(2, col_PIDLookup), ws.Cells(lastRow, col_PIDLookup))
+        .Formula = "=VLOOKUP(" & ws.Cells(2, col_ProductID).Address(False, False) & _
+                   ",'C:\Users\V3238413\Desktop\[WNBU&IOTBU PID list A.xlsx]PID'!$A:$L,12,0)"
+        .Value = .Value
+    End With
+
+    ' ===== Filter to keep only "2w" and "2s" rows =====
+    If ws.AutoFilterMode = False Then ws.Rows(1).AutoFilter
+    If ws.FilterMode Then ws.ShowAllData
+
+    ws.Rows(1).AutoFilter _
+        Field:=col_PIDLookup, _
+        Criteria1:="<>2w", _
+        Operator:=xlAnd, _
+        Criteria2:="<>2s"
+
+    On Error Resume Next
+    Set rng = ws.Range("A2:A" & lastRow).SpecialCells(xlCellTypeVisible)
+    If Not rng Is Nothing Then rng.EntireRow.Delete
+    On Error GoTo 0
+
+    ws.AutoFilter.ShowAllData
+
+    ' ===== Remove PID Lookup column =====
+    ws.Columns(col_PIDLookup).Delete
+
+    ' ===== Add column E =====
+    ws.Columns("E").Insert Shift:=xlToRight
+
+    fvtPath = "C:\Users\V3238413\Desktop\FVT WNBU " & todayStr & ".xlsx"
+
+    On Error Resume Next
+    Set wbFVT = Workbooks("FVT WNBU " & todayStr & ".xlsx")
+    On Error GoTo 0
+
+    If wbFVT Is Nothing Then
+        If Dir(fvtPath) <> "" Then
+            Set wbFVT = Workbooks.Open(fvtPath, ReadOnly:=True)
+        Else
+            MsgBox "FVT WNBU file not found.", vbCritical
+            Exit Sub
+        End If
+    End If
+
+    lastRowE = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+
+    ws.Range("E2:E" & lastRowE).Formula = _
+        "=VLOOKUP(A2,'[FVT WNBU " & todayStr & ".xlsx]Sheet1'!$B:$P,15,0)"
+    'ws.Range("E2:E" & lastRowE).Value = ws.Range("E2:E" & lastRowE).Value
+
+    ' ===== Add column I =====
+    ws.Columns("I").Insert Shift:=xlToRight
+
+    ws.Range("I2:I" & lastRowE).Formula = _
+        "=VLOOKUP(A2,'[FVT WNBU " & todayStr & ".xlsx]Sheet1'!$B:$I,8,0)"
+    ws.Range("I2:I" & lastRowE).Value = ws.Range("I2:I" & lastRowE).Value
+
+    ' ===== Step 2 processing =====
+    Call ProcessStep2(ws, lastRowE)
+
+    ' --- Enable AutoFilter at the end ---
+    On Error Resume Next
+    If ws.AutoFilterMode = False Then
+        ws.Rows(1).AutoFilter
+    Else
+        ' If AutoFilter is already enabled but some data is hidden, show all rows
+        ws.ShowAllData
+    End If
+    On Error GoTo 0
+
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+
+    MsgBox "CTB process completed."
+
+End Sub
+
+
+' =========================
+' Step 2 Processing
+' =========================
+Private Sub ProcessStep2(ws As Worksheet, lastRowE As Long)
+    Dim statusCol As Long, commentCol As Long, eCol As Long
+    Dim rankCol As Long, buildDateCol As Long, qtyCol As Long
+    Dim i As Long, s As String, rd As Variant
+    Dim todayDate As Date, curDate As Date, lastWorkDay As Date
+
+    ' --- Detect columns by header ---
+    statusCol = FindColumnByHeader(ws, "CTB_STATUS"): If statusCol = 0 Then statusCol = 3
+    commentCol = FindColumnByHeader(ws, "CTB_COMMENT"): If commentCol = 0 Then commentCol = 4
+
+    eCol = 5
+
+    rankCol = FindColumnByHeader(ws, "Final Rank Available Date (CRSD-45/20)"): If rankCol = 0 Then rankCol = 11
+    buildDateCol = FindColumnByHeader(ws, "BUILD_DATE"): If buildDateCol = 0 Then buildDateCol = 6
+    qtyCol = FindColumnByHeader(ws, "Unstaged Qty"): If qtyCol = 0 Then qtyCol = 7
+
+    ' --- Clear old data ---
+    ws.Range(ws.Cells(2, statusCol), ws.Cells(lastRowE, statusCol)).ClearContents
+    ws.Range(ws.Cells(2, commentCol), ws.Cells(lastRowE, commentCol)).ClearContents
+    ws.Range(ws.Cells(2, buildDateCol), ws.Cells(lastRowE, buildDateCol)).ClearContents
+
+    ' --- Calculate workdays (Mon-Fri only) ---
+    todayDate = Date
+    curDate = todayDate
+    If Weekday(curDate, vbMonday) = 7 Then curDate = curDate + 1
+    lastWorkDay = curDate + (6 - Weekday(curDate, vbMonday))
+
+    ' Rule 1: PRINT / NEW / ARRIVE -> GO
+    For i = 2 To lastRowE
+        s = UpperText(ws.Cells(i, eCol).Value)
+        If s = "PRINT" Or s = "NEW" Or s = "ARRIVE" Then
+            ws.Cells(i, statusCol).Value = "GO"
+        End If
+    Next i
+
+    ' Rule 2: Pattern ,MMDD*Qty -> GO
+    For i = 2 To lastRowE
+        s = UpperText(ws.Cells(i, eCol).Value)
+        If HasMMDDStarNumber(s) Then
+            ws.Cells(i, statusCol).Value = "GO"
+        End If
+    Next i
+
+    ' Rule 3: CRD TOO LATE
+    For i = 2 To lastRowE
+        s = UpperText(ws.Cells(i, eCol).Value)
+        rd = ws.Cells(i, rankCol).Value
+        If InStr(1, s, "CRD TOO LATE", vbTextCompare) > 0 Then
+            If IsDate(rd) And CDate(rd) >= curDate And CDate(rd) <= lastWorkDay Then
+                ws.Cells(i, statusCol).Value = "GO"
+            Else
+                ws.Cells(i, statusCol).Value = "MATERIAL"
+            End If
+        End If
+    Next i
+
+    ' Rule 4: FAI -> OTHERS
+    For i = 2 To lastRowE
+        Dim cellVal As String
+        cellVal = SafeText(ws.Cells(i, eCol).Value)
+
+        Dim sUpper As String
+        sUpper = UCase$(cellVal)
+        sUpper = Replace(sUpper, vbLf, " ")
+        sUpper = Replace(sUpper, vbCr, " ")
+        sUpper = Trim(sUpper)
+    
+        If InStr(1, sUpper, "FAI", vbTextCompare) > 0 Then
+            ws.Cells(i, statusCol).Value = "OTHERS"
+            ws.Cells(i, commentCol).Value = "NEW PID Pending FAI"
+        ElseIf Left$(sUpper, 10) = "TEST ORDER" Then
+            ws.Cells(i, statusCol).Value = "OTHERS"
+            ws.Cells(i, commentCol).Value = cellVal  ' 
+        End If
+    Next i
+
+    ' Rule 5: MSR handling
+    Dim upperE As String
+
+    For i = 2 To lastRowE
+        If UCase$(SafeText(ws.Cells(i, statusCol).Value)) <> "OTHERS" _
+        And UCase$(SafeText(ws.Cells(i, statusCol).Value)) <> "GO" Then
+
+            upperE = UpperText(ws.Cells(i, eCol).Value)
+
+            If Left$(Trim$(upperE), 3) = "MSR" Then
+                ws.Cells(i, statusCol).Value = "MATERIAL"
+                ws.Cells(i, commentCol).Value = SafeText(ws.Cells(i, eCol).Value)
+            End If
+        End If
+    Next i
+
+    ' Rule 6: Assign build dates
+    Call AssignBuildDates(ws, lastRowE, statusCol, qtyCol, buildDateCol, curDate, lastWorkDay)
+
+End Sub
+
+' =========================
+' Assign Build Dates
+' =========================
+Private Sub AssignBuildDates(ws As Worksheet, lastRowE As Long, statusCol As Long, qtyCol As Long, buildDateCol As Long, curDate As Date, lastWorkDay As Date)
+    Dim totalQty As Double, qtyPerDay As Double, remainingQty As Double, rowQty As Double
+    Dim daysCount As Long, assignDate As Date, i As Long
+
+    totalQty = 0
+    For i = 2 To lastRowE
+        If UCase$(SafeText(ws.Cells(i, statusCol).Value)) = "GO" Then
+            totalQty = totalQty + SafeDbl(ws.Cells(i, qtyCol).Value)
+        End If
+    Next i
+
+    daysCount = CLng(lastWorkDay - curDate + 1)
+    If daysCount < 1 Then daysCount = 1
+
+    If totalQty > 0 Then
+        qtyPerDay = totalQty / daysCount
+        assignDate = curDate
+        If Weekday(assignDate, vbMonday) = 7 Then assignDate = assignDate + 1
+
+        remainingQty = 0
+        For i = 2 To lastRowE
+            If UCase$(SafeText(ws.Cells(i, statusCol).Value)) = "GO" Then
+                rowQty = SafeDbl(ws.Cells(i, qtyCol).Value)
+                remainingQty = remainingQty + rowQty
+                ws.Cells(i, buildDateCol).Value = assignDate
+
+                If remainingQty >= qtyPerDay Then
+                    remainingQty = 0
+                    assignDate = assignDate + 1
+                    If Weekday(assignDate, vbMonday) = 7 Then assignDate = assignDate + 1
+                    If assignDate > lastWorkDay Then assignDate = lastWorkDay
+                End If
+            End If
+        Next i
+        ws.Range(ws.Cells(2, buildDateCol), ws.Cells(lastRowE, buildDateCol)).NumberFormat = "dd-mmm-yy"
+    End If
+End Sub
+
+' =========================
+' Helpers
+' =========================
+Private Function FindColumnByHeader(ByVal ws As Worksheet, ByVal headerText As String) As Long
+    Dim lastColX As Long, j As Long
+    lastColX = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For j = 1 To lastColX
+        If Trim$(UCase$(CStr(ws.Cells(1, j).Value))) = Trim$(UCase$(headerText)) Then
+            FindColumnByHeader = j
+            Exit Function
+        End If
+    Next j
+    FindColumnByHeader = 0
+End Function
+
+Private Sub MoveColumnByHeader(ws As Worksheet, ByVal headerText As String, ByVal targetCol As Long)
+    Dim colIndex As Long
+    colIndex = FindColumnByHeader(ws, headerText)
+    If colIndex > 0 Then
+        ws.Columns(colIndex).Cut
+        ws.Columns(targetCol).Insert Shift:=xlToRight
+    End If
+End Sub
+
+Private Function HasMMDDStarNumber(ByVal v As Variant) As Boolean
+    If IsError(v) Then HasMMDDStarNumber = False: Exit Function
+    Dim re As Object
+    Set re = CreateObject("VBScript.RegExp")
+    re.Pattern = ",\d{4}\*\d+"
+    re.IgnoreCase = True
+    HasMMDDStarNumber = re.test(CStr(v))
+End Function
+
+Private Function SafeDbl(ByVal v As Variant) As Double
+    If IsError(v) Or Not IsNumeric(v) Then
+        SafeDbl = 0
+    Else
+        SafeDbl = CDbl(v)
+    End If
+End Function
+
+Private Function SafeText(ByVal v As Variant) As String
+    If IsError(v) Then
+        SafeText = ""
+    Else
+        SafeText = CStr(v)
+    End If
+End Function
+
+Private Function UpperText(ByVal v As Variant) As String
+    If IsError(v) Then
+        UpperText = ""
+    Else
+        UpperText = UCase$(Trim$(CStr(v)))
+    End If
+End Function
